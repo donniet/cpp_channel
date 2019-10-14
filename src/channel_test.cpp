@@ -5,8 +5,10 @@
 #include <chrono>
 #include <iostream>
 
+using namespace chan;
+
 TEST(ChannelTest, SendRecv) {
-    chan::channel<int> c;
+    channel<int> c;
 
     c.send(5);
     int r;
@@ -16,7 +18,7 @@ TEST(ChannelTest, SendRecv) {
 }
 
 TEST(ChannelTest, SendRecvThread) {
-    chan::channel<int> c;
+    channel<int> c;
 
     int val = 0;
 
@@ -32,28 +34,28 @@ TEST(ChannelTest, SendRecvThread) {
 }
 
 TEST(ChannelTest, Select) {
-    chan::channel<int> c;
+    channel<int> c;
     
     int val = 0;
 
     c.send(7);
 
-    chan::select(
-        chan::case_receive(val, c)
+    select(
+        case_receive(val, c)
     );
 
     EXPECT_EQ(val, 7);
 }
 
 TEST(ChannelTest, SelectAction) {
-    chan::channel<int> c;
+    channel<int> c;
     
     int val = 0;
 
     c.send(7);
 
-    chan::select(
-        chan::case_receive(val, c, [&val]{
+    select(
+        case_receive(val, c, [&val]{
             val++;
         })
     );
@@ -62,13 +64,13 @@ TEST(ChannelTest, SelectAction) {
 }
 
 TEST(ChannelTest, SelectThread) {
-    chan::channel<int> c;
+    channel<int> c;
     
     int val = 0;
 
     std::thread r([&c, &val]{
-        chan::select(
-            chan::case_receive(val, c)
+        select(
+            case_receive(val, c)
         );
     });
 
@@ -82,13 +84,13 @@ TEST(ChannelTest, SelectThread) {
 }
 
 TEST(ChannelTest, SelectThreadAction) {
-    chan::channel<int> c;
+    channel<int> c;
     
     int val = 0;
 
     std::thread r([&c, &val]{
-        chan::select(
-            chan::case_receive(val, c, [&val]{
+        select(
+            case_receive(val, c, [&val]{
                 val++;
             })
         );
@@ -106,14 +108,46 @@ TEST(ChannelTest, SelectThreadAction) {
 TEST(ChannelTest, SelectDefault) {
     int val = 0;
 
-    chan::select(
-        chan::case_default([&val]{
+    select(
+        case_default([&val]{
             val = 1;
         })
     );
 
     EXPECT_EQ(val, 1);
 }
+
+TEST(ChannelTest, SelectDefaultCase) {
+    channel<int> c;
+    int val = 0;
+
+    select(
+        case_receive(val, c),
+        case_default([&val]{
+            val = 1;
+        })
+    );
+
+    EXPECT_EQ(val, 1);
+}
+
+TEST(ChannelTest, SelectDefaultCaseSend) {
+    channel<int> c;
+    int val = 0;
+
+    c.send(2);
+
+    select(
+        case_receive(val, c),
+        case_default([&val]{
+            val = 1;
+        })
+    );
+
+    EXPECT_EQ(val, 2);
+}
+
+
 
 int main(int argc, char ** argv) {
     ::testing::InitGoogleTest(&argc, argv);
