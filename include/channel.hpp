@@ -9,6 +9,7 @@
 #include <iostream>
 #include <map>
 #include <deque>
+#include <type_traits>
 
 namespace chan {
 
@@ -99,6 +100,8 @@ public:
     channel<T> * chan;
     std::function<void()> action;
 
+    typedef T value_type;
+
     receiver(T & d, channel<T> & c, std::function<void()> action) : dat(&d), chan(&c), action(action) {}
     receiver(channel<T> & c, std::function<void()> action) : dat(nullptr), chan(&c), action(action) {}
     receiver(T & d, channel<T> & c) : dat(&d), chan(&c), action() {}
@@ -113,13 +116,16 @@ template<typename T> receiver<T> case_receive(channel<T> & c, std::function<void
     return receiver<T>(c, action);
 }
 
-class defaulter {
+template<>
+class receiver<void> {
 public:
+    typedef void value_type;
+
     std::function<void()> action;
 };
 
-defaulter case_default(std::function<void()> action = nullptr) {
-    return defaulter{action};
+receiver<void> case_default(std::function<void()> action = nullptr) {
+    return receiver<void>{action};
 }
 
 template<typename ... Ts>
@@ -133,15 +139,8 @@ public:
     std::function<void()> selected_action;
     bool completed;
 
-    selector(defaulter def) : selector() {
-        if(!completed) {
-            selected_action = def.action;
-            completed = true;
-        }
-    }
-
     selector() 
-        : selected_action(nullptr), completed(false) 
+        : selected_action(nullptr), completed(false)
     { }
 
     void wait_and_action() {
@@ -153,6 +152,22 @@ public:
             selected_action();
         }
     }
+
+    bool get_completed() {
+        std::unique_lock<std::mutex> lock(m);
+
+        return completed;
+    }
+};
+
+template<> 
+class selector<void> : public selector<> {
+public:
+    std::function<void()> action;
+
+    selector(receiver<void> const & def) : selector<>() {
+        action = def.action;
+    }
 };
 
 template<typename T, typename ... Ts>
@@ -163,15 +178,6 @@ public:
     std::function<void()> action;
 
     int wait_id;
-
-    selector(defaulter def, receiver<T> const & r, receiver<Ts> const & ... rs)
-        : selector<T, Ts...>(r, rs...)
-    { 
-        if (!this->completed) {
-            this->selected_action = def.action;
-            this->completed = true;
-        }
-    }
 
     selector(receiver<T> const & r, receiver<Ts> const & ... rs)
         : selector<Ts...>(rs...), dat(r.dat), chan(r.chan), action(r.action), wait_id(0)
@@ -186,7 +192,7 @@ public:
 
         if(wait_id == 0) {
             notify(d);
-        }
+        } 
     }
 
     ~selector() {
@@ -213,24 +219,39 @@ public:
     }
 };
 
+template<bool has_default, typename ... Ts>
+struct select_inner {};
+
+template<typename ... Ts>
+struct select_inner<true, Ts...> {
+    static void select(receiver<Ts> const & ... rs) {
+        selector<Ts...> s(rs...);
+
+        // if it completed, execute the action
+        if (s.get_completed()) {
+            s.wait_and_action();
+            return;
+        }
+
+        // or else execute the default action
+        selector<void> * ps = dynamic_cast<selector<void>*>(&s);
+        ps->action();
+    }
+};
+
+template<typename ... Ts>
+struct select_inner<false, Ts...> {
+    static void select(receiver<Ts> const & ... rs) {
+        selector<Ts...> s(rs...);
+
+        s.wait_and_action();
+    }
+};
+
 template<typename ... Ts>
 void select(receiver<Ts> const & ... rs) {
-    selector<Ts...> s(rs...);
-
-    s.wait_and_action();
-}
-
-template<typename ... Ts>
-void select(receiver<Ts> const & ... rs, defaulter const & def) {
-    selector<Ts...> s(def, rs...);
-
-    s.wait_and_action();
-}
-
-void select(defaulter const & def) {
-    selector<> s(def);
-
-    s.wait_and_action();
+    // this ensures that we are only casting to the default type if we have that case.
+    select_inner<std::is_base_of<selector<void>, selector<Ts...>>::value, Ts...>::select(rs...);
 }
 
 
