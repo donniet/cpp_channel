@@ -10,17 +10,29 @@
 #include <map>
 #include <deque>
 #include <type_traits>
+#include <thread>
 
 namespace chan {
 
 template<typename T>
+struct scoped_reference_count {
+private:
+    T & p;
+public:
+    scoped_reference_count(T & p) : p(++p) { }
+    ~scoped_reference_count() { --p; }
+};
+
+template<typename T>
 class channel {
 private:
-    std::deque<T> queue;
+    std::list<T> queue;
     std::mutex m;
     std::condition_variable cv;
 
     bool is_closed_;
+
+    int receivers_;
 
     typedef std::list<std::pair<int, std::function<bool(const T & msg, bool is_closed)>>> wait_list_type;
 
@@ -80,6 +92,11 @@ public:
             is_closed_ = true;
             // queue is empty iff wait_list is not empty
             empty_wait_list();
+
+            if (queue.size() == 0) {
+                lock.unlock();
+                cv.notify_all();
+            }
         }
     }
     bool send(const T & msg) {
@@ -113,15 +130,25 @@ public:
     bool recv(T & msg) {
         std::unique_lock<std::mutex> lock(m);
 
+        scoped_reference_count<int> ref(receivers_);
+
         cv.wait(lock, [this]{ return queue.size() > 0 || is_closed_; });
 
-        // this means that it's closed
+        // TODO: there is a chance that after descruction this could result in a segmentation fault
+        //   we should find a way to use the receivers_ reference count to ensure no more receivers before 
+        //   finishing destruction.  maybe we need another condition variable?
+        // this means that the channel must be closed
         if (queue.size() == 0) {
             return false;
         }
 
         msg = queue.front();
         queue.pop_front();
+
+        if (is_closed_ && queue.size() == 0) {
+            lock.unlock();
+            cv.notify_all();
+        }
 
         return true;
     }
@@ -131,7 +158,25 @@ public:
         return is_closed_;
     }
 
-    channel() : wait_id(0), is_closed_(false) { }    
+    channel() 
+        : wait_id(0), is_closed_(false), receivers_(0) 
+    { }
+
+    ~channel() {
+        // empty the queue
+        std::unique_lock<std::mutex> lock(m);
+        queue.clear();
+
+        // implement close minus the locking under the same lock to prevent race conditions:
+        if (!is_closed_) {
+            is_closed_ = true;
+            // queue is empty iff wait_list is not empty
+            empty_wait_list();
+        }
+
+        lock.unlock();
+        cv.notify_all();
+    } 
 };
 
 template<typename T>
@@ -144,29 +189,46 @@ public:
 
     typedef T value_type;
 
-    receiver(T & d, channel<T> & c, std::function<void()> action) : dat(&d), closed(nullptr), chan(&c), action(action) {}
-    receiver(T & d, bool & closed, channel<T> & c, std::function<void()> action) : dat(&d), closed(&closed), chan(&c), action(action) {}
-    receiver(channel<T> & c, std::function<void()> action) : dat(nullptr), closed(nullptr), chan(&c), action(action) {}
-    receiver(bool & closed, channel<T> & c, std::function<void()> action) : dat(nullptr), closed(&closed), chan(&c), action(action) {}
-    receiver(T & d, channel<T> & c) : dat(&d), closed(nullptr), chan(&c), action() {}
-    receiver(T & d, bool & closed, channel<T> & c) : dat(&d), closed(&closed), chan(&c), action() {}
-    receiver(channel<T> & c) : dat(nullptr), closed(nullptr), chan(&c), action() {}
-    receiver(bool & closed, channel<T> & c) : dat(nullptr), closed(&closed), chan(&c), action() {}
-    receiver(std::function<void()> action = nullptr) : dat(nullptr), closed(nullptr), chan(nullptr), action(action) {}
+    receiver(T * d, channel<T> & c, std::function<void()> action) 
+        : dat(d), closed(nullptr), chan(&c), action(action) 
+    { }
+
+    receiver(std::pair<T*,bool*> p, channel<T> & c, std::function<void()> action) 
+        : dat(p.first), closed(p.second), chan(&c), action(action) 
+    { }
+
+    receiver(channel<T> & c, std::function<void()> action) 
+        : dat(nullptr), closed(nullptr), chan(&c), action(action) 
+    { }
+    
+    receiver(T * d, channel<T> & c) 
+        : dat(d), closed(nullptr), chan(&c), action() 
+    { }
+
+    receiver(std::pair<T*,bool*> p, channel<T> & c) 
+        : dat(p.first), closed(p.second), chan(&c), action() 
+    { }
+
+    receiver(channel<T> & c) 
+        : dat(nullptr), closed(nullptr), chan(&c), action() 
+    { }
+
+    // default receiver
+    receiver(std::function<void()> action = nullptr) 
+        : dat(nullptr), closed(nullptr), chan(nullptr), action(action) 
+    { }
 };
 
-template<typename T> receiver<T> case_receive(T & dat, channel<T> & c, std::function<void()> action = nullptr) {
+template<typename T> receiver<T> case_receive(T * dat, channel<T> & c, std::function<void()> action = nullptr) {
     return receiver<T>(dat, c, action);
 }
 template<typename T> receiver<T> case_receive(channel<T> & c, std::function<void()> action = nullptr) {
     return receiver<T>(c, action);
 }
-template<typename T> receiver<T> case_receive(T & dat, bool & closed, channel<T> & c, std::function<void()> action = nullptr) {
-    return receiver<T>(dat, closed, c, action);
+template<typename T> receiver<T> case_receive(std::pair<T*, bool*> p, channel<T> & c, std::function<void()> action = nullptr) {
+    return receiver<T>(p, c, action);
 }
-template<typename T> receiver<T> case_receive(bool & closed, channel<T> & c, std::function<void()> action = nullptr) {
-    return receiver<T>(closed, c, action);
-}
+
 
 template<>
 class receiver<void> {
@@ -262,7 +324,9 @@ public:
         if (dat != nullptr)
             *dat = val;
 
-        if (closed)
+        if (closed != nullptr) {
+            *closed = is_closed;
+        }
 
         this->selected_action = action;
         this->completed = true;
