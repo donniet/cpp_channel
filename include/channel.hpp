@@ -20,7 +20,9 @@ private:
     std::mutex m;
     std::condition_variable cv;
 
-    typedef std::list<std::pair<int, std::function<bool(const T & msg)>>> wait_list_type;
+    bool is_closed_;
+
+    typedef std::list<std::pair<int, std::function<bool(const T & msg, bool is_closed)>>> wait_list_type;
 
     int wait_id;
     wait_list_type wait_list;
@@ -30,13 +32,16 @@ public:
     // returns true if available, false if waiting
     // either way this returns immediately and does not wait
     // returns zero if value is set.
-    int recv_or_notify(T & msg, std::function<bool(const T & msg)> notifier) {
+    int recv_or_notify(T & msg, std::function<bool(const T & msg, bool is_closed)> notifier) {
         std::unique_lock<std::mutex> lock(m);
 
         if (queue.size() > 0) {
             msg = queue.front();
             queue.pop_front();
 
+            return 0;
+        } else if (is_closed_) {
+            //TODO: should we set msg to T()? to mimic the "zero value" in golang?
             return 0;
         }
 
@@ -57,8 +62,34 @@ public:
         wait_list.erase(i->second);
         return true;
     }
+    void empty_wait_list() {
+        T zero;
+
+        while(wait_list.size() > 0) {
+            auto notify = wait_list.front();
+            wait_list.pop_front();
+            wait_list_index.erase(notify.first);
+
+            notify.second(zero, is_closed_);
+        }
+    }
+    void close() {
+        std::unique_lock<std::mutex> lock(m);
+
+        if (!is_closed_) {
+            is_closed_ = true;
+            // queue is empty iff wait_list is not empty
+            empty_wait_list();
+        }
+    }
     bool send(const T & msg) {
         std::unique_lock<std::mutex> lock(m);
+
+        // in golang send on a closed channel panics, but we will return false
+        if (is_closed_) {
+            empty_wait_list();
+            return false;
+        }
 
         // waiters get first priority
         while (wait_list.size() > 0) {
@@ -67,7 +98,7 @@ public:
             wait_list_index.erase(notify.first);
         
             // if the receiver returns true we can exit, otherwise go onto the next waiter
-            if (notify.second(msg)) {
+            if (notify.second(msg, is_closed_)) {
                 return true;
             }
         }
@@ -82,31 +113,46 @@ public:
     bool recv(T & msg) {
         std::unique_lock<std::mutex> lock(m);
 
-        cv.wait(lock, [this]{ return queue.size() > 0; });
+        cv.wait(lock, [this]{ return queue.size() > 0 || is_closed_; });
+
+        // this means that it's closed
+        if (queue.size() == 0) {
+            return false;
+        }
 
         msg = queue.front();
         queue.pop_front();
 
         return true;
     }
+    bool is_closed() {
+        std::unique_lock<std::mutex> lock(m);
 
-    channel() : wait_id(0) { }    
+        return is_closed_;
+    }
+
+    channel() : wait_id(0), is_closed_(false) { }    
 };
 
 template<typename T>
 class receiver {
 public:
     T * dat;
+    bool * closed;
     channel<T> * chan;
     std::function<void()> action;
 
     typedef T value_type;
 
-    receiver(T & d, channel<T> & c, std::function<void()> action) : dat(&d), chan(&c), action(action) {}
-    receiver(channel<T> & c, std::function<void()> action) : dat(nullptr), chan(&c), action(action) {}
-    receiver(T & d, channel<T> & c) : dat(&d), chan(&c), action() {}
-    receiver(channel<T> & c) : dat(nullptr), chan(&c), action() {}
-    receiver(std::function<void()> action = nullptr) : dat(nullptr), chan(nullptr), action(action) {}
+    receiver(T & d, channel<T> & c, std::function<void()> action) : dat(&d), closed(nullptr), chan(&c), action(action) {}
+    receiver(T & d, bool & closed, channel<T> & c, std::function<void()> action) : dat(&d), closed(&closed), chan(&c), action(action) {}
+    receiver(channel<T> & c, std::function<void()> action) : dat(nullptr), closed(nullptr), chan(&c), action(action) {}
+    receiver(bool & closed, channel<T> & c, std::function<void()> action) : dat(nullptr), closed(&closed), chan(&c), action(action) {}
+    receiver(T & d, channel<T> & c) : dat(&d), closed(nullptr), chan(&c), action() {}
+    receiver(T & d, bool & closed, channel<T> & c) : dat(&d), closed(&closed), chan(&c), action() {}
+    receiver(channel<T> & c) : dat(nullptr), closed(nullptr), chan(&c), action() {}
+    receiver(bool & closed, channel<T> & c) : dat(nullptr), closed(&closed), chan(&c), action() {}
+    receiver(std::function<void()> action = nullptr) : dat(nullptr), closed(nullptr), chan(nullptr), action(action) {}
 };
 
 template<typename T> receiver<T> case_receive(T & dat, channel<T> & c, std::function<void()> action = nullptr) {
@@ -114,6 +160,12 @@ template<typename T> receiver<T> case_receive(T & dat, channel<T> & c, std::func
 }
 template<typename T> receiver<T> case_receive(channel<T> & c, std::function<void()> action = nullptr) {
     return receiver<T>(c, action);
+}
+template<typename T> receiver<T> case_receive(T & dat, bool & closed, channel<T> & c, std::function<void()> action = nullptr) {
+    return receiver<T>(dat, closed, c, action);
+}
+template<typename T> receiver<T> case_receive(bool & closed, channel<T> & c, std::function<void()> action = nullptr) {
+    return receiver<T>(closed, c, action);
 }
 
 template<>
@@ -160,7 +212,7 @@ public:
     }
 };
 
-template<> 
+template<>
 class selector<void> : public selector<> {
 public:
     std::function<void()> action;
@@ -174,6 +226,7 @@ template<typename T, typename ... Ts>
 class selector<T, Ts...> : public selector<Ts...> {
 public:
     T * dat;
+    bool * closed;
     channel<T> * chan;
     std::function<void()> action;
 
@@ -188,10 +241,10 @@ public:
         // no need to lock because constructors are called sequentially
         T d;
 
-        wait_id = chan->recv_or_notify(d, std::bind(&selector<T, Ts...>::notify, this, std::placeholders::_1));
+        wait_id = chan->recv_or_notify(d, std::bind(&selector<T, Ts...>::notify, this, std::placeholders::_1, std::placeholders::_2));
 
         if(wait_id == 0) {
-            notify(d);
+            notify(d, chan->is_closed());
         } 
     }
 
@@ -199,7 +252,7 @@ public:
         chan->unnotify(wait_id);
     }
 
-    bool notify(T const & val) {
+    bool notify(T const & val, bool is_closed) {
         std::unique_lock<std::mutex> lock(this->m);
 
         // only allow one case to be selected
@@ -208,6 +261,8 @@ public:
 
         if (dat != nullptr)
             *dat = val;
+
+        if (closed)
 
         this->selected_action = action;
         this->completed = true;
@@ -251,7 +306,10 @@ struct select_inner<false, Ts...> {
 template<typename ... Ts>
 void select(receiver<Ts> const & ... rs) {
     // this ensures that we are only casting to the default type if we have that case.
-    select_inner<std::is_base_of<selector<void>, selector<Ts...>>::value, Ts...>::select(rs...);
+    select_inner<
+        std::is_base_of<selector<void>, selector<Ts...>>::value,
+        Ts...
+    >::select(rs...);
 }
 
 

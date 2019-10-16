@@ -7,6 +7,16 @@
 
 using namespace chan;
 
+TEST(ChannelTest, Close) {
+    channel<int> c;
+
+    EXPECT_FALSE(c.is_closed());
+
+    c.close();
+
+    EXPECT_TRUE(c.is_closed());
+}
+
 TEST(ChannelTest, SendRecv) {
     channel<int> c;
 
@@ -15,6 +25,34 @@ TEST(ChannelTest, SendRecv) {
     c.recv(r);
 
     EXPECT_EQ(r, 5);
+
+    c.send(6);
+    c.send(7);
+    c.send(8);
+
+    c.recv(r);
+
+    EXPECT_EQ(r, 6);
+    
+    c.recv(r);
+
+    EXPECT_EQ(r, 7);
+
+    c.recv(r);
+
+    EXPECT_EQ(r, 8);
+
+    c.send(9);
+    c.send(10);
+    c.close();
+
+    c.recv(r);
+    EXPECT_EQ(r, 9);
+    c.recv(r);
+    EXPECT_EQ(r, 10);
+    r = 0;
+    EXPECT_FALSE(c.recv(r));
+    EXPECT_EQ(r, 0);
 }
 
 TEST(ChannelTest, SendRecvThread) {
@@ -31,6 +69,20 @@ TEST(ChannelTest, SendRecvThread) {
     r.join();
 
     EXPECT_EQ(val, 6);
+
+    std::thread p([&c, &val]{
+        for(int i = 7; i < 10; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            c.send(i);
+        }
+    });
+
+    for(int i = 7; i < 10; i++) {
+        c.recv(val);
+        EXPECT_EQ(val, i);
+    }
+
+    p.join();
 }
 
 TEST(ChannelTest, Select) {
@@ -83,6 +135,52 @@ TEST(ChannelTest, SelectThread) {
     EXPECT_EQ(val, 8);
 }
 
+
+TEST(ChannelTest, SelectThreadCases) {
+    channel<int> c, d;
+    
+    int val = 0;
+
+    std::thread r([&c, &d, &val]{
+        select(
+            case_receive(val, c),
+            case_receive(val, d)
+        );
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    c.send(8);
+    d.send(9);
+    
+    r.join();
+
+    EXPECT_EQ(val, 8);
+}
+
+TEST(ChannelTest, SelectThreadWithDefault) {
+    channel<int> c;
+    
+    int val = 0;
+
+    std::thread r([&c, &val]{
+        select(
+            case_receive(val, c),
+            case_default([&val]{
+                val = 10;
+            })
+        );
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    c.send(9);
+    
+    r.join();
+
+    EXPECT_EQ(val, 10);
+}
+
 TEST(ChannelTest, SelectThreadAction) {
     channel<int> c;
     
@@ -130,6 +228,21 @@ TEST(ChannelTest, SelectDefaultCase) {
 
     EXPECT_EQ(val, 1);
 }
+
+// TODO: allow default case to come at any position
+// TEST(ChannelTest, SelectDefaultCasePosition) {
+//     channel<int> c;
+//     int val = 0;
+
+//     select(
+//         case_default([&val]{
+//             val = 1;
+//         }),
+//         case_receive(val, c)
+//     );
+
+//     EXPECT_EQ(val, 1);
+// }
 
 TEST(ChannelTest, SelectDefaultCaseSend) {
     channel<int> c;
