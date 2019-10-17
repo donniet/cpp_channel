@@ -146,50 +146,50 @@ TEST(ChannelTest, SelectThread) {
 }
 
 
-// TEST(ChannelTest, SelectThreadCases) {
-//     channel<int> c, d;
+TEST(ChannelTest, SelectThreadCases) {
+    channel<int> c, d;
     
-//     int val = 0;
+    int val = 0;
 
-//     std::thread r([&c, &d, &val]{
-//         select(
-//             case_receive(&val, c),
-//             case_receive(&val, d)
-//         );
-//     });
+    std::thread r([&c, &d, &val]{
+        select(
+            case_receive(&val, c),
+            case_receive(&val, d)
+        );
+    });
 
-//     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-//     c.send(8);
-//     d.send(9);
+    c.send(8);
+    d.send(9);
     
-//     r.join();
+    r.join();
 
-//     EXPECT_EQ(val, 8);
-// }
+    EXPECT_EQ(val, 8);
+}
 
-// TEST(ChannelTest, SelectThreadWithDefault) {
-//     channel<int> c;
+TEST(ChannelTest, SelectThreadWithDefault) {
+    channel<int> c;
     
-//     int val = 0;
+    int val = 0;
 
-//     std::thread r([&c, &val]{
-//         select(
-//             case_receive(&val, c),
-//             case_default([&val]{
-//                 val = 10;
-//             })
-//         );
-//     });
+    std::thread r([&c, &val]{
+        select(
+            case_receive(&val, c),
+            case_default([&val]{
+                val = 10;
+            })
+        );
+    });
 
-//     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
-//     c.send(9);
+    c.send(9);
     
-//     r.join();
+    r.join();
 
-//     EXPECT_EQ(val, 10);
-// }
+    EXPECT_EQ(val, 10);
+}
 
 TEST(ChannelTest, SelectThreadAction) {
     channel<int> c;
@@ -268,21 +268,21 @@ TEST(ChannelTest, SelectDefault) {
 //     EXPECT_EQ(val, 1);
 // }
 
-// TEST(ChannelTest, SelectDefaultCaseSend) {
-//     channel<int> c;
-//     int val = 0;
+TEST(ChannelTest, SelectDefaultCaseSend) {
+    channel<int> c;
+    int val = 0;
 
-//     c.send(2);
+    c.send(2);
 
-//     select(
-//         case_receive(&val, c),
-//         case_default([&val]{
-//             val = 1;
-//         })
-//     );
+    select(
+        case_receive(&val, c),
+        case_default([&val]{
+            val = 1;
+        })
+    );
 
-//     EXPECT_EQ(val, 2);
-// }
+    EXPECT_EQ(val, 2);
+}
 
 
 

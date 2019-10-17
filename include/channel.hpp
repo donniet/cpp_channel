@@ -295,7 +295,7 @@ public:
     int wait_id;
 
     selector(receiver<T> const & r, receiver<Ts> const & ... rs)
-        : selector<Ts...>(rs...), dat(r.dat), chan(r.chan), action(r.action), wait_id(0)
+        : selector<Ts...>(rs...), dat(r.dat), closed(r.closed), chan(r.chan), action(r.action), wait_id(0)
     { 
         if (this->completed)
             return;
@@ -377,105 +377,4 @@ void select(receiver<Ts> const & ... rs) {
 }
 
 
-
-// template<typename ... Ts>
-// void select_inner(std::condition_variable &, receiver<Ts> & ... rs);
-
-// template<typename ... Ts>
-// bool select_inner(
-//     bool * completed, 
-//     std::mutex * m, 
-//     std::condition_variable * cv, 
-//     const receiver<Ts> & ... rs);
-
-// template<typename ... Ts>
-// void select(const receiver<Ts> & ... rs) {
-//     std::mutex m;
-//     std::unique_lock<std::mutex> lk(m);
-//     bool completed = false;
-
-//     std::condition_variable to_notify;
-
-//     if (select_inner(&completed, &m, &to_notify, rs...)) {
-//         return;
-//     }
-
-//     to_notify.wait(lk, [&completed]{ return completed; });
-// }
-
-// template<typename T>
-// void notifier(
-//     bool * completed, 
-//     std::mutex * m, 
-//     std::condition_variable * cv, 
-//     const std::function<void()> & action, 
-//     T * const & dat, 
-//     const T & msg) 
-// {
-//     std::unique_lock<std::mutex> lk(*m);
-
-//     if (dat != nullptr)
-//         *dat = msg;
-
-//     // TODO: should this come after the action or before?
-//     *completed = true;
-
-//     // TODO: exception handling will be a nightmare...
-//     if (action) {
-//         action();
-//     }
-
-//     lk.unlock();
-//     cv->notify_all();
-// }
-
-// template<typename T, typename ... Ts>
-// bool select_inner(
-//     bool * completed, 
-//     std::mutex * m,  
-//     std::condition_variable * cv, 
-//     const receiver<T> & r, 
-//     const receiver<Ts> & ... rs) 
-// {
-//     // default case
-//     if (r.chan == nullptr) {
-//         if (r.action) {
-//             r.action();
-//         }
-//         return true;
-//     }
-
-//     T temp;
-
-//     if (r.chan->recv_or_notify(temp, std::bind(notifier<T>, completed, m, cv, r.action, r.dat, std::placeholders::_1))) {
-//         if (r.dat != nullptr) {
-//             *r.dat = temp;
-//         }
-
-//         if (r.action) {
-//             r.action();
-//         }
-//         return true;
-//     }
-
-//     return select_inner(completed, m, cv, rs...);
-// }
-
-// // tail case
-// template<> bool select_inner(
-//     bool *,
-//     std::mutex *, 
-//     std::condition_variable *)
-// {
-//     return false;
-// }
-
-} //namespace chan
-
-
-// void use_select() {
-//     select(
-//         receiver(msg, chan, []{}),
-
-//     )
-// }
+} // namespace chan
