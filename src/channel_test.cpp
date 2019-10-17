@@ -182,7 +182,7 @@ TEST(ChannelTest, SelectThreadWithDefault) {
         );
     });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     c.send(9);
     
@@ -250,6 +250,62 @@ TEST(ChannelTest, SelectDefault) {
     );
 
     EXPECT_EQ(val, 3);
+    EXPECT_TRUE(closed);
+}
+
+TEST(ChannelTest, StressTest) {
+    int val = 0;
+
+    channel<int> c;
+
+    std::thread r([&c]{
+        for(int i = 0; i < 1e6; i++) {
+            c.send(i);
+        }
+        c.close();
+    });
+
+    int match = 0;
+
+    for(int i = 0; i < 1e6; i++) {
+        c.recv(val);
+
+        if (i == val) match++;
+    }
+
+    r.join();
+
+    EXPECT_EQ(match, 1e6);
+    EXPECT_TRUE(c.is_closed());
+}
+
+TEST(ChannelTest, Triangle) {
+    channel<int> c, d;
+
+    std::thread r([&c, &d] {
+        int val = 0;
+        while(c.recv(val)) {
+            d.send(val);
+        }
+        d.close();
+    });
+
+    int val = 0;
+    int match = 0;
+
+    for(int i = 0; i < 1e6; i++) {
+        c.send(i);
+
+        d.recv(val);
+
+        if (i == val) match++;
+    }
+    c.close();
+    r.join();
+
+    EXPECT_EQ(match, 1e6);
+    EXPECT_TRUE(c.is_closed());
+    EXPECT_TRUE(d.is_closed());
 }
 
 

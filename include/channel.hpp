@@ -14,17 +14,64 @@
 
 namespace chan {
 
+template<typename T> class channel;
+
+namespace detail {
+    // returns true if available, false if waiting
+    // either way this returns immediately and does not wait
+    // returns zero if value is set.
+
+    // these functions shouldn't be used outside of the library
+    template<typename T>
+    int __recv_or_notify(channel<T> & c, T & msg, std::function<bool(const T & msg, bool is_closed)> notifier) {
+        std::unique_lock<std::mutex> lock(c.m);
+
+        if (c.queue.size() > 0) {
+            msg = c.queue.front();
+            c.queue.pop_front();
+
+            return 0;
+        } else if (c.is_closed_) {
+            //TODO: should we set msg to T()? to mimic the "zero value" in golang?
+            return 0;
+        }
+
+        ++c.wait_id;
+
+        auto pos = c.wait_list.insert(c.wait_list.end(), {c.wait_id, notifier});
+        c.wait_list_index[c.wait_id] = pos;
+        return c.wait_id;
+    }
+
+
+    // this function should not be used outside of the library
+    template<typename T>
+    bool __unnotify(channel<T> & c, int id) {
+        std::unique_lock<std::mutex> lock(c.m);
+
+        auto i = c.wait_list_index.find(id);
+        if (i == c.wait_list_index.end()) {
+            return false;
+        }
+
+        c.wait_list.erase(i->second);
+        return true;
+    }
+}
+
 template<typename T>
-struct scoped_reference_count {
+struct scoped_count {
 private:
     T & p;
 public:
-    scoped_reference_count(T & p) : p(++p) { }
-    ~scoped_reference_count() { --p; }
+    scoped_count(T & p) : p(++p) { }
+    ~scoped_count() { --p; }
 };
 
 template<typename T>
 class channel {
+    friend int detail::__recv_or_notify<T>(channel<T> &, T &, std::function<bool(const T &, bool)>);
+    friend bool detail::__unnotify<T>(channel<T> &, int);
 private:
     std::list<T> queue;
     std::mutex m;
@@ -40,40 +87,8 @@ private:
     wait_list_type wait_list;
     std::map<int, typename wait_list_type::iterator> wait_list_index;
 
-public:
-    // returns true if available, false if waiting
-    // either way this returns immediately and does not wait
-    // returns zero if value is set.
-    int recv_or_notify(T & msg, std::function<bool(const T & msg, bool is_closed)> notifier) {
-        std::unique_lock<std::mutex> lock(m);
 
-        if (queue.size() > 0) {
-            msg = queue.front();
-            queue.pop_front();
-
-            return 0;
-        } else if (is_closed_) {
-            //TODO: should we set msg to T()? to mimic the "zero value" in golang?
-            return 0;
-        }
-
-        ++wait_id;
-
-        auto pos = wait_list.insert(wait_list.end(), {wait_id, notifier});
-        wait_list_index[wait_id] = pos;
-        return wait_id;
-    }
-    bool unnotify(int id) {
-        std::unique_lock<std::mutex> lock(m);
-
-        auto i = wait_list_index.find(id);
-        if (i == wait_list_index.end()) {
-            return false;
-        }
-
-        wait_list.erase(i->second);
-        return true;
-    }
+    // assumes lock
     void empty_wait_list() {
         T zero;
 
@@ -85,6 +100,8 @@ public:
             notify.second(zero, is_closed_);
         }
     }
+
+public:
     void close() {
         std::unique_lock<std::mutex> lock(m);
 
@@ -99,6 +116,7 @@ public:
             }
         }
     }
+    
     bool send(const T & msg) {
         std::unique_lock<std::mutex> lock(m);
 
@@ -127,12 +145,14 @@ public:
 
         return true;
     }
+
+    template<bool wait = true>
     bool recv(T & msg) {
         std::unique_lock<std::mutex> lock(m);
 
-        scoped_reference_count<int> ref(receivers_);
+        scoped_count<int> ref(receivers_);
 
-        cv.wait(lock, [this]{ return queue.size() > 0 || is_closed_; });
+        cv.wait(lock, [this]{ return !wait || queue.size() > 0 || is_closed_; });
 
         // TODO: there is a chance that after descruction this could result in a segmentation fault
         //   we should find a way to use the receivers_ reference count to ensure no more receivers before 
@@ -167,7 +187,7 @@ public:
         std::unique_lock<std::mutex> lock(m);
         queue.clear();
 
-        // implement close minus the locking under the same lock to prevent race conditions:
+        // implement close under the same lock to prevent race conditions:
         if (!is_closed_) {
             is_closed_ = true;
             // queue is empty iff wait_list is not empty
@@ -242,136 +262,139 @@ receiver<void> case_default(std::function<void()> action = nullptr) {
     return receiver<void>{action};
 }
 
-template<typename ... Ts>
-class selector;
+namespace detail {
+    template<typename ... Ts>
+    class selector;
 
-template<> class selector<> {
-public:
-    std::mutex m;
-    std::condition_variable cv;
+    template<> class selector<> {
+    public:
+        std::mutex m;
+        std::condition_variable cv;
 
-    std::function<void()> selected_action;
-    bool completed;
+        std::function<void()> selected_action;
+        bool completed;
 
-    selector() 
-        : selected_action(nullptr), completed(false)
-    { }
+        selector() 
+            : selected_action(nullptr), completed(false)
+        { }
 
-    void wait_and_action() {
-        std::unique_lock<std::mutex> lock(m);
+        void wait_and_action() {
+            std::unique_lock<std::mutex> lock(m);
 
-        cv.wait(lock, [this]{ return completed; });
+            cv.wait(lock, [this]{ return completed; });
 
-        if (selected_action) {
-            selected_action();
-        }
-    }
-
-    bool get_completed() {
-        std::unique_lock<std::mutex> lock(m);
-
-        return completed;
-    }
-};
-
-template<>
-class selector<void> : public selector<> {
-public:
-    std::function<void()> action;
-
-    selector(receiver<void> const & def) : selector<>() {
-        action = def.action;
-    }
-};
-
-template<typename T, typename ... Ts>
-class selector<T, Ts...> : public selector<Ts...> {
-public:
-    T * dat;
-    bool * closed;
-    channel<T> * chan;
-    std::function<void()> action;
-
-    int wait_id;
-
-    selector(receiver<T> const & r, receiver<Ts> const & ... rs)
-        : selector<Ts...>(rs...), dat(r.dat), closed(r.closed), chan(r.chan), action(r.action), wait_id(0)
-    { 
-        if (this->completed)
-            return;
-
-        // no need to lock because constructors are called sequentially
-        T d;
-
-        wait_id = chan->recv_or_notify(d, std::bind(&selector<T, Ts...>::notify, this, std::placeholders::_1, std::placeholders::_2));
-
-        if(wait_id == 0) {
-            notify(d, chan->is_closed());
-        } 
-    }
-
-    ~selector() {
-        chan->unnotify(wait_id);
-    }
-
-    bool notify(T const & val, bool is_closed) {
-        std::unique_lock<std::mutex> lock(this->m);
-
-        // only allow one case to be selected
-        if (this->completed) 
-            return false;
-
-        if (dat != nullptr)
-            *dat = val;
-
-        if (closed != nullptr) {
-            *closed = is_closed;
+            if (selected_action) {
+                selected_action();
+            }
         }
 
-        this->selected_action = action;
-        this->completed = true;
+        bool get_completed() {
+            std::unique_lock<std::mutex> lock(m);
 
-        lock.unlock();
-        this->cv.notify_all();
+            return completed;
+        }
+    };
 
-        return true;
-    }
-};
+    template<>
+    class selector<void> : public selector<> {
+    public:
+        std::function<void()> action;
 
-template<bool has_default, typename ... Ts>
-struct select_inner {};
+        selector(receiver<void> const & def) : selector<>() {
+            action = def.action;
+        }
+    };
 
-template<typename ... Ts>
-struct select_inner<true, Ts...> {
-    static void select(receiver<Ts> const & ... rs) {
-        selector<Ts...> s(rs...);
+    template<typename T, typename ... Ts>
+    class selector<T, Ts...> : public selector<Ts...> {
+    public:
+        T * dat;
+        bool * closed;
+        channel<T> * chan;
+        std::function<void()> action;
 
-        // if it completed, execute the action
-        if (s.get_completed()) {
+        int wait_id;
+
+        selector(receiver<T> const & r, receiver<Ts> const & ... rs)
+            : selector<Ts...>(rs...), dat(r.dat), closed(r.closed), chan(r.chan), action(r.action), wait_id(0)
+        { 
+            if (this->completed)
+                return;
+
+            // no need to lock because constructors are called sequentially
+            T d;
+
+            // have to force it to look for the T instantiation
+            wait_id = detail::__recv_or_notify<T>(*chan, d, std::bind(&selector<T, Ts...>::notify, this, std::placeholders::_1, std::placeholders::_2));
+
+            if(wait_id == 0) {
+                notify(d, chan->is_closed());
+            } 
+        }
+
+        ~selector() {
+            detail::__unnotify(*chan, wait_id);
+        }
+
+        bool notify(T const & val, bool is_closed) {
+            std::unique_lock<std::mutex> lock(this->m);
+
+            // only allow one case to be selected
+            if (this->completed) 
+                return false;
+
+            if (dat != nullptr)
+                *dat = val;
+
+            if (closed != nullptr) {
+                *closed = is_closed;
+            }
+
+            this->selected_action = action;
+            this->completed = true;
+
+            lock.unlock();
+            this->cv.notify_all();
+
+            return true;
+        }
+    };
+
+    template<bool has_default, typename ... Ts>
+    struct select_inner {};
+
+    template<typename ... Ts>
+    struct select_inner<true, Ts...> {
+        static void select(receiver<Ts> const & ... rs) {
+            selector<Ts...> s(rs...);
+
+            // if it completed, execute the action
+            if (s.get_completed()) {
+                s.wait_and_action();
+                return;
+            }
+
+            // or else execute the default action
+            selector<void> * ps = dynamic_cast<selector<void>*>(&s);
+            ps->action();
+        }
+    };
+
+    template<typename ... Ts>
+    struct select_inner<false, Ts...> {
+        static void select(receiver<Ts> const & ... rs) {
+            selector<Ts...> s(rs...);
+
             s.wait_and_action();
-            return;
         }
-
-        // or else execute the default action
-        selector<void> * ps = dynamic_cast<selector<void>*>(&s);
-        ps->action();
-    }
-};
-
-template<typename ... Ts>
-struct select_inner<false, Ts...> {
-    static void select(receiver<Ts> const & ... rs) {
-        selector<Ts...> s(rs...);
-
-        s.wait_and_action();
-    }
-};
+    };
+} // namespace detail
 
 template<typename ... Ts>
 void select(receiver<Ts> const & ... rs) {
     // this ensures that we are only casting to the default type if we have that case.
-    select_inner<
-        std::is_base_of<selector<void>, selector<Ts...>>::value,
+    detail::select_inner<
+        std::is_base_of<detail::selector<void>, detail::selector<Ts...>>::value,
         Ts...
     >::select(rs...);
 }
