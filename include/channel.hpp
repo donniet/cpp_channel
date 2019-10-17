@@ -55,6 +55,7 @@ namespace detail {
         }
 
         c.wait_list.erase(i->second);
+        c.wait_list_index.erase(i);
         return true;
     }
 }
@@ -93,6 +94,8 @@ private:
     }
 
 public:
+    typedef T value_type;
+
     void close() {
         std::unique_lock<std::mutex> lock(m);
 
@@ -171,7 +174,7 @@ public:
     bool is_closed() {
         std::unique_lock<std::mutex> lock(m);
 
-        return queue.empty() && is_closed_;
+        return is_closed_;
     }
 
     channel() 
@@ -198,6 +201,8 @@ public:
         cv.wait(lock, [this]{ return receivers_ == 0; });
     } 
 };
+
+
 
 template<typename T>
 class receiver {
