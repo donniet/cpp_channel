@@ -60,15 +60,6 @@ namespace detail {
 }
 
 template<typename T>
-struct scoped_count {
-private:
-    T & p;
-public:
-    scoped_count(T & p) : p(++p) { }
-    ~scoped_count() { --p; }
-};
-
-template<typename T>
 class channel {
     friend int detail::__recv_or_notify<T>(channel<T> &, T &, std::function<bool(const T &, bool)>);
     friend bool detail::__unnotify<T>(channel<T> &, int);
@@ -150,7 +141,7 @@ public:
     bool recv(T & msg) {
         std::unique_lock<std::mutex> lock(m);
 
-        scoped_count<int> ref(receivers_);
+        receivers_++;
 
         cv.wait(lock, [this]{ return !wait || queue.size() > 0 || is_closed_; });
 
@@ -158,24 +149,29 @@ public:
         //   we should find a way to use the receivers_ reference count to ensure no more receivers before 
         //   finishing destruction.  maybe we need another condition variable?
         // this means that the channel must be closed
-        if (queue.size() == 0) {
-            return false;
+
+        bool ret = true;
+
+        if (queue.size() > 0) {                
+            msg = queue.front();
+            queue.pop_front();
+        } else {
+            ret = false;
         }
 
-        msg = queue.front();
-        queue.pop_front();
+        receivers_--;
 
         if (is_closed_ && queue.size() == 0) {
             lock.unlock();
             cv.notify_all();
         }
 
-        return true;
+        return ret;
     }
     bool is_closed() {
         std::unique_lock<std::mutex> lock(m);
 
-        return is_closed_;
+        return queue.empty() && is_closed_;
     }
 
     channel() 
@@ -196,6 +192,10 @@ public:
 
         lock.unlock();
         cv.notify_all();
+
+        // receivers notify when they end if the channel is closed, this will
+        // wait for all receivers to finish before completing desctruction
+        cv.wait(lock, [this]{ return receivers_ == 0; });
     } 
 };
 
