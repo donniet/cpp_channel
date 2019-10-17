@@ -95,7 +95,7 @@ TEST(ChannelTest, Select) {
     c.send(7);
 
     select(
-        case_receive(&val, c)
+        case_receive(val, c)
     );
 
     EXPECT_EQ(val, 7);
@@ -103,7 +103,7 @@ TEST(ChannelTest, Select) {
     c.close();
 
     select(
-        case_receive(std::pair(&val, &ok), c)
+        case_receive(std::tie(val, ok), c)
     );
 
     EXPECT_TRUE(ok);
@@ -117,7 +117,7 @@ TEST(ChannelTest, SelectAction) {
     c.send(7);
 
     select(
-        case_receive(&val, c, [&val]{
+        case_receive(val, c, [&val]{
             val++;
         })
     );
@@ -132,7 +132,7 @@ TEST(ChannelTest, SelectThread) {
 
     std::thread r([&c, &val]{
         select(
-            case_receive(&val, c)
+            case_receive(val, c)
         );
     });
 
@@ -153,8 +153,8 @@ TEST(ChannelTest, SelectThreadCases) {
 
     std::thread r([&c, &d, &val]{
         select(
-            case_receive(&val, c),
-            case_receive(&val, d)
+            case_receive(val, c),
+            case_receive(val, d)
         );
     });
 
@@ -175,7 +175,7 @@ TEST(ChannelTest, SelectThreadWithDefault) {
 
     std::thread r([&c, &val]{
         select(
-            case_receive(&val, c),
+            case_receive(val, c),
             case_default([&val]{
                 val = 10;
             })
@@ -198,7 +198,7 @@ TEST(ChannelTest, SelectThreadAction) {
 
     std::thread r([&c, &val]{
         select(
-            case_receive(&val, c, [&val]{
+            case_receive(val, c, [&val]{
                 val++;
             })
         );
@@ -228,7 +228,7 @@ TEST(ChannelTest, SelectDefault) {
     val = 0;
 
     select(
-        case_receive(&val, c),
+        case_receive(val, c),
         case_default([&val]{
             val = 2;
         })
@@ -241,7 +241,7 @@ TEST(ChannelTest, SelectDefault) {
     c.close();
 
     select(
-        case_receive(std::pair(&val, &closed), c, [&val]{
+        case_receive(std::tie(val, closed), c, [&val]{
             val = 3;
         }),
         case_default([&val]{
@@ -275,7 +275,7 @@ TEST(ChannelTest, SelectDefaultCaseSend) {
     c.send(2);
 
     select(
-        case_receive(&val, c),
+        case_receive(val, c),
         case_default([&val]{
             val = 1;
         })

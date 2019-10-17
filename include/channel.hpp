@@ -189,24 +189,24 @@ public:
 
     typedef T value_type;
 
-    receiver(T * d, channel<T> & c, std::function<void()> action) 
-        : dat(d), closed(nullptr), chan(&c), action(action) 
+    receiver(T & d, channel<T> & c, std::function<void()> action) 
+        : dat(&d), closed(nullptr), chan(&c), action(action) 
     { }
 
-    receiver(std::pair<T*,bool*> p, channel<T> & c, std::function<void()> action) 
-        : dat(p.first), closed(p.second), chan(&c), action(action) 
+    receiver(std::tuple<T&,bool&> p, channel<T> & c, std::function<void()> action) 
+        : dat(&std::get<0>(p)), closed(&std::get<1>(p)), chan(&c), action(action) 
     { }
 
     receiver(channel<T> & c, std::function<void()> action) 
         : dat(nullptr), closed(nullptr), chan(&c), action(action) 
     { }
     
-    receiver(T * d, channel<T> & c) 
-        : dat(d), closed(nullptr), chan(&c), action() 
+    receiver(T & d, channel<T> & c) 
+        : dat(&d), closed(nullptr), chan(&c), action() 
     { }
 
-    receiver(std::pair<T*,bool*> p, channel<T> & c) 
-        : dat(p.first), closed(p.second), chan(&c), action() 
+    receiver(std::tuple<T&,bool&> p, channel<T> & c) 
+        : dat(&std::get<0>(p)), closed(&std::get<1>(p)), chan(&c), action() 
     { }
 
     receiver(channel<T> & c) 
@@ -219,13 +219,13 @@ public:
     { }
 };
 
-template<typename T> receiver<T> case_receive(T * dat, channel<T> & c, std::function<void()> action = nullptr) {
+template<typename T> receiver<T> case_receive(T & dat, channel<T> & c, std::function<void()> action = nullptr) {
     return receiver<T>(dat, c, action);
 }
 template<typename T> receiver<T> case_receive(channel<T> & c, std::function<void()> action = nullptr) {
     return receiver<T>(c, action);
 }
-template<typename T> receiver<T> case_receive(std::pair<T*, bool*> p, channel<T> & c, std::function<void()> action = nullptr) {
+template<typename T> receiver<T> case_receive(std::tuple<T&, bool&> p, channel<T> & c, std::function<void()> action = nullptr) {
     return receiver<T>(p, c, action);
 }
 
