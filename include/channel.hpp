@@ -21,25 +21,48 @@ namespace detail {
     // either way this returns immediately and does not wait
     // returns zero if value is set.
 
-    // these functions shouldn't be used outside of the library
+    // these functions shouldn't be used outside of the library.  They are external to the class to allow
+    // friend-like access into the class for the selects below
     template<typename T>
-    int __recv_or_notify(channel<T> & c, T & msg, std::function<bool(const T & msg, bool is_closed)> notifier) {
+    int __recv_or_notify(channel<T> & c, std::function<bool(const T & msg, bool is_closed)> notifier) {
         std::unique_lock<std::mutex> lock(c.m);
+
+        T msg;
+        bool is_closed = false;
+        bool no_wait = false;
 
         if (c.queue.size() > 0) {
             msg = c.queue.front();
             c.queue.pop_front();
+            is_closed = false; // only return closed if we didn't send back an output
 
-            return 0;
+            no_wait = true;
         } else if (c.is_closed_) {
             //TODO: should we set msg to T()? to mimic the "zero value" in golang?
-            return 0;
+            is_closed = true;
+
+            no_wait = true;
         }
+
+        // notify now
+        if (no_wait)
+            notifier(msg, is_closed);
+
+        // this looks a bit complicated, but basically if we got something from the queue
+        // but now it's empty and closed, we have to notify people.
+        if (!is_closed && no_wait && c.queue.size() == 0 && c.is_closed_) {
+            lock.unlock();
+            c.cv.notify_all();
+        }
+
+        if (no_wait) 
+            return 0;
 
         ++c.wait_id;
 
         auto pos = c.wait_list.insert(c.wait_list.end(), {c.wait_id, notifier});
         c.wait_list_index[c.wait_id] = pos;
+
         return c.wait_id;
     }
 
@@ -62,7 +85,7 @@ namespace detail {
 
 template<typename T>
 class channel {
-    friend int detail::__recv_or_notify<T>(channel<T> &, T &, std::function<bool(const T &, bool)>);
+    friend int detail::__recv_or_notify<T>(channel<T> &, std::function<bool(const T &, bool)>);
     friend bool detail::__unnotify<T>(channel<T> &, int);
 private:
     std::list<T> queue;
@@ -89,12 +112,19 @@ private:
             wait_list.pop_front();
             wait_list_index.erase(notify.first);
 
-            notify.second(zero, is_closed_);
+            // we only empty the list if we are closed
+            notify.second(zero, true);
         }
     }
 
 public:
     typedef T value_type;
+
+    auto size() {
+        std::unique_lock<std::mutex> lock(m);
+
+        return queue.size();
+    }
 
     void close() {
         std::unique_lock<std::mutex> lock(m);
@@ -116,9 +146,10 @@ public:
 
         // in golang send on a closed channel panics, but we will return false
         if (is_closed_) {
-            empty_wait_list();
+            if (wait_list.size() > 0) 
+                empty_wait_list();
             return false;
-        }
+        } 
 
         // waiters get first priority
         while (wait_list.size() > 0) {
@@ -127,7 +158,8 @@ public:
             wait_list_index.erase(notify.first);
         
             // if the receiver returns true we can exit, otherwise go onto the next waiter
-            if (notify.second(msg, is_closed_)) {
+            // the second param should be false (is_closed) because 
+            if (notify.second(msg, false)) {
                 return true;
             }
         }
@@ -144,27 +176,27 @@ public:
     bool recv(T & msg) {
         std::unique_lock<std::mutex> lock(m);
 
+        // keep track of receivers.  This allows us to wait for all receivers to 
+        // go away before we free the memory
         receivers_++;
 
-        cv.wait(lock, [this]{ return !wait || queue.size() > 0 || is_closed_; });
-
-        // TODO: there is a chance that after descruction this could result in a segmentation fault
-        //   we should find a way to use the receivers_ reference count to ensure no more receivers before 
-        //   finishing destruction.  maybe we need another condition variable?
-        // this means that the channel must be closed
+        if (wait) cv.wait(lock, [this]{ return queue.size() > 0 || is_closed_; });
 
         bool ret = true;
 
-        if (queue.size() > 0) {                
+        if (queue.size() > 0) {
+            // if there's something to send send it
             msg = queue.front();
             queue.pop_front();
         } else {
+            // otherwise we are either closed or not waiting around
             ret = false;
         }
 
         receivers_--;
 
-        if (is_closed_ && queue.size() == 0) {
+        // if we got something, but it was the last thing and we are closed, notify everybody.
+        if (ret && is_closed_ && queue.size() == 0) {
             lock.unlock();
             cv.notify_all();
         }
@@ -174,7 +206,7 @@ public:
     bool is_closed() {
         std::unique_lock<std::mutex> lock(m);
 
-        return is_closed_;
+        return queue.size() == 0 && is_closed_;
     }
 
     channel() 
@@ -261,6 +293,11 @@ public:
     typedef void value_type;
 
     std::function<void()> action;
+
+        // default receiver
+    receiver(std::function<void()> action = nullptr) 
+        : action(action) 
+    { }
 };
 
 receiver<void> case_default(std::function<void()> action = nullptr) {
@@ -323,22 +360,21 @@ namespace detail {
         selector(receiver<T> const & r, receiver<Ts> const & ... rs)
             : selector<Ts...>(rs...), dat(r.dat), closed(r.closed), chan(r.chan), action(r.action), wait_id(0)
         { 
+            // no need to lock because constructors are called sequentially
+
+            // we could be completed already if a previous constructor pulled a value from a channel
             if (this->completed)
                 return;
 
-            // no need to lock because constructors are called sequentially
-            T d;
 
             // have to force it to look for the T instantiation
-            wait_id = detail::__recv_or_notify<T>(*chan, d, std::bind(&selector<T, Ts...>::notify, this, std::placeholders::_1, std::placeholders::_2));
-
-            if(wait_id == 0) {
-                notify(d, chan->is_closed());
-            } 
+            wait_id = detail::__recv_or_notify<T>(*chan, std::bind(&selector<T, Ts...>::notify, this, std::placeholders::_1, std::placeholders::_2));
         }
 
         ~selector() {
-            detail::__unnotify(*chan, wait_id);
+            // no need to lock here either because destructors are called sequentially
+            if (wait_id != 0)
+                detail::__unnotify(*chan, wait_id);
         }
 
         bool notify(T const & val, bool is_closed) {

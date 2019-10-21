@@ -4,6 +4,8 @@
 #include <thread>
 #include <chrono>
 #include <iostream>
+#include <vector>
+#include <set>
 
 using namespace chan;
 
@@ -277,6 +279,73 @@ TEST(ChannelTest, StressTest) {
 
     EXPECT_EQ(match, 1e6);
     EXPECT_TRUE(c.is_closed());
+}
+
+TEST(ChannelTest, StressTest2) {
+    channel<int> c;
+    channel<int> to_close;
+
+    int thread_count = 1000;
+    int insert = 1000;
+    std::vector<std::thread*> threads;
+
+    std::atomic_int32_t fail_count = 0;
+
+    std::set<int> all;
+
+    for(int i = 0; i < thread_count * insert; i++) {
+        all.insert(i);
+    }
+
+    for(int i = 0; i < thread_count; i++) {
+        threads.push_back(new std::thread([i, thread_count, insert, &c, &to_close, &fail_count]{
+            for(int j = 0; j < insert; j++) {
+                if (!c.send(i * insert + j)) {
+                    std::cerr << "insert failed!" << std::endl;
+                    fail_count++;
+                }
+            }
+            to_close.send(i);
+        }));
+    }
+
+
+    int count = 0;
+    int completed = 0;
+    int val = 0;
+    bool is_closed = false;
+
+    while(!is_closed) {
+        select(
+            case_receive(std::tie(val, is_closed), c, [&count, &all, val]{ 
+                all.erase(val);
+                count++; 
+            }),
+            case_receive(to_close, [&completed, &c, thread_count]{ 
+                completed++; 
+                if (completed >= thread_count) {
+                    std::cerr << "all threads completed: " << completed << std::endl;
+                    c.close();
+                }
+            })
+        );
+    }
+
+    // cleanup
+    for(std::thread *& t : threads) {
+        t->join();
+        t = nullptr;
+        delete t;
+    }
+    threads.empty();
+
+    for(int x : all) {
+        std::cerr << x << " ";
+    }
+    std::cerr << std::endl;
+
+    EXPECT_EQ(fail_count, 0);
+    EXPECT_EQ(count, thread_count * insert);
 }
 
 TEST(ChannelTest, Triangle) {
