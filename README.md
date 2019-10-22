@@ -1,6 +1,6 @@
 # cpp_channel
 
-A [golang](https://golang.org) style [channel](https://golang.org/ref/spec#Channel_types) with [select](https://golang.org/ref/spec#Select_statements).  
+A [header-only](https://github.com/donniet/cpp_channel/blob/master/include/channel.hpp) [golang](https://golang.org)-style [channel](https://golang.org/ref/spec#Channel_types) with [select](https://golang.org/ref/spec#Select_statements).  
 
 ## usage
 
@@ -47,21 +47,23 @@ Note that the channel must be passed by reference, it is not copy constructable,
 You can also wait on multiple channels using a select:
 
 ```
-chan::channel<int> c;
-chan::channel<bool> completed;
+using namespace chan;
+
+channel<int> c;
+channel<bool> completed;
 
 std::thread worker([&c, &completed]{
   int val;
   bool comp;
   while(!comp) {
-    chan::select(
+    select(
       // note that the captured variables are passed by reference.
       // this is important because if passed by value the value would
       // be captured before the case has completed.
-      chan::case_receive(val, c, [&val]{
+      case_receive(val, c, [&val]{
         std::cout << "got a value: " << val << std::endl;
       }),
-      chan::case_receive(comp, completed, [&c, &comp]{
+      case_receive(comp, completed, [&c, &comp]{
         if (comp) c.close();
       })
     );
@@ -69,11 +71,13 @@ std::thread worker([&c, &completed]{
 });
 
 std::thread timer([&completed]{
-  std::this_thread::sleep_for(std::milliseconds(1000));
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   completed.send(true);
 });
 
-for(int i = 0; c.send(i); i++) { }
+for(int i = 0; c.send(i); i++) { 
+  // will end once the timer thread sends the complete signal
+}
 
 timer.join();
 worker.join();
