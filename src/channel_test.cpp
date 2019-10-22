@@ -339,10 +339,11 @@ TEST(ChannelTest, StressTest3) {
     }
     std::cerr << std::endl;
 
+#ifndef NDEBUG
     EXPECT_EQ(c.recv_queue() + c.recv_watchers(), thread_count * insert);
     EXPECT_EQ(c.recv_while_closed(), 0);
     EXPECT_EQ(c.send_queue() + c.send_watchers(), thread_count * insert);
-
+#endif
     EXPECT_EQ(fail_count, 0);
     EXPECT_EQ(count, thread_count * insert);
 }
@@ -432,8 +433,10 @@ TEST(ChannelTest, StressTestSelect) {
     }
     threads.empty();
 
+#ifndef NDEBUG
     EXPECT_EQ(c.recv_queue() + c.recv_watchers(), thread_count * insert);
     EXPECT_EQ(c.send_queue() + c.send_watchers(), thread_count * insert);
+#endif
     EXPECT_EQ(all.size(), 0);
 
     EXPECT_EQ(fail_count, 0);
