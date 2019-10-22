@@ -6,13 +6,13 @@ A [header-only](https://github.com/donniet/cpp_channel/blob/master/include/chann
 
 Channels can be constructed using the passed type
 
-```
+```cpp
 chan::channel<int> c;
 ```
 
 Then data can be sent and received using the `send` and `recv` functions:
 
-```
+```cpp
 chan::channel<int> c;
 bool success = false;
 success = c.send(5);
@@ -25,7 +25,7 @@ ASSERT_EQ(val, 5);
 
 The true value of a channel is for passing data between threads:
 
-```
+```cpp
 chan::channel<int> c;
 
 std::thread worker([&c]{
@@ -46,7 +46,7 @@ Note that the channel must be passed by reference, it is not copy constructable,
 
 You can also wait on multiple channels using a select:
 
-```
+```cpp
 using namespace chan;
 
 channel<int> c;
