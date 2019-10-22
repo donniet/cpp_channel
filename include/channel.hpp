@@ -31,6 +31,7 @@ namespace detail {
         bool send_closed = false;
         bool no_wait = false;
 
+        // is there something in the queue already?
         if (c.queue.size() > 0) {
             msg = c.queue.front();
             c.queue.pop_front();
@@ -73,6 +74,7 @@ namespace detail {
             c.cv.notify_all();
         }
 
+        // if we found something in the queue we can just exit here
         if (no_wait) 
             return 0;
 
@@ -101,13 +103,14 @@ namespace detail {
         return true;
     }
 
+    // use a list as the queue for complex types
     template<typename T, bool trivial = false>
     class __channel_queue {
     protected:
         std::list<T> queue;
     };
 
-    // use a vector for trivial types
+    // use a deque for trivial types to speed things up a but
     template<typename T>
     class __channel_queue<T, true> {
     protected:
@@ -115,7 +118,15 @@ namespace detail {
     };
 
     template<typename T>
-    class __channel_base : public __channel_queue<T, std::is_trivial<T>::value> { };
+    class __channel_base 
+        : public __channel_queue<
+            T, 
+            std::conjunction<
+                std::is_trivial<T>,
+                std::is_standard_layout<T>
+            >::value
+        >
+    { };
 }
 
 template<typename T>
