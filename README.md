@@ -55,6 +55,9 @@ std::thread worker([&c, &completed]{
   bool comp;
   while(!comp) {
     chan::select(
+      // note that the captured variables are passed by reference.
+      // this is important because if passed by value the value would
+      // be captured before the case has completed.
       chan::case_receive(val, c, [&val]{
         std::cout << "got a value: " << val << std::endl;
       }),
@@ -75,3 +78,10 @@ for(int i = 0; c.send(i); i++) { }
 timer.join();
 worker.join();
 ```
+
+## TODOs
+- set a maximum channel buffer size
+- allow sends in select statements
+- explicitly delete copy constructor
+- research if channels can be move constructable
+- research a shared_ptr specialization for channels
