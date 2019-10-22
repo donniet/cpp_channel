@@ -119,13 +119,7 @@ namespace detail {
 
     template<typename T>
     class __channel_base 
-        : public __channel_queue<
-            T, 
-            std::conjunction<
-                std::is_trivial<T>,
-                std::is_standard_layout<T>
-            >::value
-        >
+        : public __channel_queue<T, std::is_trivial<T>::value>
     { };
 }
 
