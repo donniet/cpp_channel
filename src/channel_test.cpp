@@ -281,7 +281,95 @@ TEST(ChannelTest, StressTest) {
     EXPECT_TRUE(c.is_closed());
 }
 
-TEST(ChannelTest, StressTest2) {
+TEST(ChannelTest, StressTest3) {
+    channel<int> c;
+
+    int thread_count = 1000;
+    int insert = 1000;
+    std::vector<std::thread*> threads;
+
+    std::atomic_int32_t fail_count = 0;
+
+    std::set<int> all;
+
+    for(int i = 0; i < thread_count * insert; i++) {
+        all.insert(i);
+    }
+
+    for(int i = 0; i < thread_count; i++) {
+        threads.push_back(new std::thread([i, thread_count, insert, &c, &fail_count]{
+            for(int j = 0; j < insert; j++) {
+                if (!c.send(i * insert + j)) {
+                    std::cerr << "insert failed!" << std::endl;
+                    fail_count++;
+                }
+            }
+        }));
+    }
+
+
+    int count = 0;
+    int completed = 0;
+    int val = 0;
+    bool is_closed = false;
+
+    for(int i = 0; i < thread_count * insert; i++) {
+        if (!c.recv(val)) {
+            std::cerr << "recv failed!" << std::endl;
+            fail_count++;
+        } else {
+            count++;
+            if (all.erase(val) != 1) {
+                std::cerr << "duplicate detecte: " << val << std::endl;
+                fail_count++;
+            }
+        }
+    }
+
+    // cleanup
+    for(std::thread *& t : threads) {
+        t->join();
+        t = nullptr;
+        delete t;
+    }
+    threads.empty();
+
+    for(int x : all) {
+        std::cerr << x << " ";
+    }
+    std::cerr << std::endl;
+
+    EXPECT_EQ(c.recv_queue() + c.recv_watchers(), thread_count * insert);
+    EXPECT_EQ(c.recv_while_closed(), 0);
+    EXPECT_EQ(c.send_queue() + c.send_watchers(), thread_count * insert);
+
+    EXPECT_EQ(fail_count, 0);
+    EXPECT_EQ(count, thread_count * insert);
+}
+
+TEST(ChannelTest, ReceiveClosed) {
+    channel<int> c;
+
+    c.close();
+
+    int val = 0xDEADBEEF;
+    bool is_closed = false;
+    bool is_error = false;
+
+    select(
+        case_receive(std::tie(val, is_closed), c, [&is_closed, &is_error]{
+            if (!is_closed) {
+                is_error = true;
+            }
+        })
+    );
+
+    ASSERT_FALSE(is_error);
+    ASSERT_TRUE(is_closed);
+}
+
+
+TEST(ChannelTest, StressTestSelect) {
     channel<int> c;
     channel<int> to_close;
 
@@ -317,14 +405,19 @@ TEST(ChannelTest, StressTest2) {
 
     while(!is_closed) {
         select(
-            case_receive(std::tie(val, is_closed), c, [&count, &all, val]{ 
-                all.erase(val);
-                count++; 
+            case_receive(std::tie(val, is_closed), c, [&count, &all, &val, &fail_count, &is_closed]{ 
+                int c = 0;
+                if (!is_closed) {
+                    if ((c = all.erase(val)) != 1) {
+                        fail_count++;
+                    } else {
+                        count++;
+                    }
+                }
             }),
             case_receive(to_close, [&completed, &c, thread_count]{ 
                 completed++; 
                 if (completed >= thread_count) {
-                    std::cerr << "all threads completed: " << completed << std::endl;
                     c.close();
                 }
             })
@@ -339,10 +432,9 @@ TEST(ChannelTest, StressTest2) {
     }
     threads.empty();
 
-    for(int x : all) {
-        std::cerr << x << " ";
-    }
-    std::cerr << std::endl;
+    EXPECT_EQ(c.recv_queue() + c.recv_watchers(), thread_count * insert);
+    EXPECT_EQ(c.send_queue() + c.send_watchers(), thread_count * insert);
+    EXPECT_EQ(all.size(), 0);
 
     EXPECT_EQ(fail_count, 0);
     EXPECT_EQ(count, thread_count * insert);

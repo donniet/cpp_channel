@@ -28,29 +28,47 @@ namespace detail {
         std::unique_lock<std::mutex> lock(c.m);
 
         T msg;
-        bool is_closed = false;
+        bool send_closed = false;
         bool no_wait = false;
 
         if (c.queue.size() > 0) {
             msg = c.queue.front();
             c.queue.pop_front();
-            is_closed = false; // only return closed if we didn't send back an output
+            send_closed = false; // only return closed if we didn't send back an output
 
             no_wait = true;
+
         } else if (c.is_closed_) {
             //TODO: should we set msg to T()? to mimic the "zero value" in golang?
-            is_closed = true;
+            send_closed = true;
 
             no_wait = true;
         }
 
         // notify now
-        if (no_wait)
-            notifier(msg, is_closed);
+        if (no_wait) {
+            if (!notifier(msg, send_closed)) {
+                // the notifier has finished, we need to put this back onto the queue or else we'll lose it!
+                // TODO: maybe there's a better way to do this-- but I think that the channel should act as
+                // if the item has been removed while the action happens (if it happens) which means
+                // that pushing it back on might be the only way.
+                c.queue.push_front(msg);
+
+                // we can probably return here, but control will flow to the if(no_wait) statement below
+            } else {
+#ifndef NDEBUG 
+                if (send_closed) {
+                    c.receive_while_closed_++;
+                } else {
+                    c.receive_queue_++;
+                }
+#endif
+            }
+        }
 
         // this looks a bit complicated, but basically if we got something from the queue
         // but now it's empty and closed, we have to notify people.
-        if (!is_closed && no_wait && c.queue.size() == 0 && c.is_closed_) {
+        if (!send_closed && no_wait && c.queue.size() == 0 && c.is_closed_) {
             lock.unlock();
             c.cv.notify_all();
         }
@@ -58,6 +76,7 @@ namespace detail {
         if (no_wait) 
             return 0;
 
+        // if we get here we are a waiter.
         ++c.wait_id;
 
         auto pos = c.wait_list.insert(c.wait_list.end(), {c.wait_id, notifier});
@@ -81,14 +100,32 @@ namespace detail {
         c.wait_list_index.erase(i);
         return true;
     }
+
+    template<typename T, bool trivial = false>
+    class __channel_queue {
+    protected:
+        std::list<T> queue;
+    };
+
+    // use a vector for trivial types
+    template<typename T>
+    class __channel_queue<T, true> {
+    protected:
+        std::deque<T> queue;
+    };
+
+    template<typename T>
+    class __channel_base : public __channel_queue<T, std::is_trivial<T>::value> { };
 }
 
 template<typename T>
-class channel {
+class channel 
+    // this will use a deque for simple data types, but a list for complex ones
+    : public detail::__channel_base<T> 
+{
     friend int detail::__recv_or_notify<T>(channel<T> &, std::function<bool(const T &, bool)>);
     friend bool detail::__unnotify<T>(channel<T> &, int);
 private:
-    std::list<T> queue;
     std::mutex m;
     std::condition_variable cv;
 
@@ -102,6 +139,14 @@ private:
     wait_list_type wait_list;
     std::map<int, typename wait_list_type::iterator> wait_list_index;
 
+
+#ifndef NDEBUG
+    int send_watchers_;
+    int send_queue_;
+    int receive_watcher_;
+    int receive_queue_;
+    int receive_while_closed_;
+#endif
 
     // assumes lock
     void empty_wait_list() {
@@ -123,7 +168,7 @@ public:
     auto size() {
         std::unique_lock<std::mutex> lock(m);
 
-        return queue.size();
+        return this->queue.size();
     }
 
     void close() {
@@ -134,7 +179,7 @@ public:
             // queue is empty iff wait_list is not empty
             empty_wait_list();
 
-            if (queue.size() == 0) {
+            if (this->queue.size() == 0) {
                 lock.unlock();
                 cv.notify_all();
             }
@@ -146,8 +191,9 @@ public:
 
         // in golang send on a closed channel panics, but we will return false
         if (is_closed_) {
-            if (wait_list.size() > 0) 
-                empty_wait_list();
+            // the wait list has to be empty if is_closed_ is set, see close()
+            // if (wait_list.size() > 0) 
+            //     empty_wait_list();
             return false;
         } 
 
@@ -160,11 +206,19 @@ public:
             // if the receiver returns true we can exit, otherwise go onto the next waiter
             // the second param should be false (is_closed) because 
             if (notify.second(msg, false)) {
+#ifndef NDEBUG
+                send_watchers_++;
+                receive_watcher_++;
+#endif
                 return true;
             }
         }
 
-        queue.push_back(msg);
+#ifndef NDEBUG
+        send_queue_++;
+#endif
+
+        this->queue.push_back(msg);
 
         lock.unlock();
         cv.notify_one();
@@ -180,14 +234,18 @@ public:
         // go away before we free the memory
         receivers_++;
 
-        if (wait) cv.wait(lock, [this]{ return queue.size() > 0 || is_closed_; });
+        if (wait) cv.wait(lock, [this]{ return this->queue.size() > 0 || is_closed_; });
 
         bool ret = true;
 
-        if (queue.size() > 0) {
+        if (this->queue.size() > 0) {
             // if there's something to send send it
-            msg = queue.front();
-            queue.pop_front();
+            msg = this->queue.front();
+            this->queue.pop_front();
+
+#ifndef NDEBUG
+            receive_queue_++;
+#endif
         } else {
             // otherwise we are either closed or not waiting around
             ret = false;
@@ -196,7 +254,7 @@ public:
         receivers_--;
 
         // if we got something, but it was the last thing and we are closed, notify everybody.
-        if (ret && is_closed_ && queue.size() == 0) {
+        if (ret && is_closed_ && this->queue.size() == 0) {
             lock.unlock();
             cv.notify_all();
         }
@@ -206,17 +264,48 @@ public:
     bool is_closed() {
         std::unique_lock<std::mutex> lock(m);
 
-        return queue.size() == 0 && is_closed_;
+        return this->queue.size() == 0 && is_closed_;
     }
 
     channel() 
         : wait_id(0), is_closed_(false), receivers_(0) 
+#ifndef NDEBUG
+            , send_queue_(0), send_watchers_(0), receive_queue_(0), receive_watcher_(0), receive_while_closed_(0)
+#endif
     { }
+
+#ifndef NDEBUG
+    int send_watchers() {
+        std::unique_lock<std::mutex> lock(m);
+
+        return send_watchers_;
+    }
+    int send_queue() {
+        std::unique_lock<std::mutex> lock(m);
+
+        return send_queue_;
+    }
+    int recv_watchers() {
+        std::unique_lock<std::mutex> lock(m);
+
+        return receive_watcher_;
+    }
+    int recv_queue() {
+        std::unique_lock<std::mutex> lock(m);
+
+        return receive_queue_;
+    }
+    int recv_while_closed() {
+        std::unique_lock<std::mutex> lock(m);
+
+        return receive_while_closed_;
+    }
+#endif
 
     ~channel() {
         // empty the queue
         std::unique_lock<std::mutex> lock(m);
-        queue.clear();
+        this->queue.clear();
 
         // implement close under the same lock to prevent race conditions:
         if (!is_closed_) {
@@ -276,6 +365,9 @@ public:
     { }
 };
 
+// NOTE: if the action passed into any receive case captures data received from channel (dat and is_closed boolean)
+// those must be passed by reference, or else their value at the time of instantiation will be captured, instead
+// of their value at the time of execution of the action (after the channel has received)
 template<typename T> receiver<T> case_receive(T & dat, channel<T> & c, std::function<void()> action = nullptr) {
     return receiver<T>(dat, c, action);
 }
