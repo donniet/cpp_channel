@@ -4,7 +4,7 @@ A [header-only](https://github.com/donniet/cpp_channel/blob/master/include/chann
 
 ## usage
 
-Channels can be constructed using the passed type
+Channels are type-safe and simply constructed.
 
 ```cpp
 chan::channel<int> c;
