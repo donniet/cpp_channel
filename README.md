@@ -87,5 +87,6 @@ worker.join();
 - set a maximum channel buffer size
 - allow sends in select statements
 - explicitly delete copy constructor
+- implement range looping over a channel
 - research if channels can be move constructable
 - research a shared_ptr specialization for channels
