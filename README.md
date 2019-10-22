@@ -53,8 +53,8 @@ channel<int> c;
 channel<bool> completed;
 
 std::thread worker([&c, &completed]{
-  int val;
-  bool comp;
+  int val = 0;
+  bool comp = false;
   while(!comp) {
     select(
       // note that the captured variables are passed by reference.
