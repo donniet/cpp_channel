@@ -137,12 +137,15 @@ private:
     bool is_closed_;
 
     int receivers_;
+    int senders_;
 
     typedef std::list<std::pair<int, std::function<bool(const T & msg, bool is_closed)>>> wait_list_type;
 
     int wait_id;
     wait_list_type wait_list;
     std::map<int, typename wait_list_type::iterator> wait_list_index;
+
+    int capacity_;
 
 
 #ifndef NDEBUG
@@ -191,6 +194,7 @@ public:
         }
     }
     
+    template<bool wait = true>
     bool send(const T & msg) {
         std::unique_lock<std::mutex> lock(m);
 
@@ -201,6 +205,8 @@ public:
             //     empty_wait_list();
             return false;
         } 
+
+        senders_++;
 
         // waiters get first priority
         while (wait_list.size() > 0) {
@@ -215,6 +221,7 @@ public:
                 send_watchers_++;
                 receive_watcher_++;
 #endif
+                senders_--;
                 return true;
             }
         }
@@ -223,7 +230,25 @@ public:
         send_queue_++;
 #endif
 
+        if (this->queue.size() >= capacity_ + receivers_) {
+            // no space and not waiting
+            if (!wait) {
+                senders_--;
+                return false;
+            }
+
+            cv.wait(lock, [this]{ return is_closed_ || this->queue.size() < capacity_ + receivers_; });
+            
+            // have to check closed again
+            if (is_closed_) {
+                senders_--;
+                return false;
+            }
+        }
+
         this->queue.push_back(msg);
+
+        senders_--;
 
         lock.unlock();
         cv.notify_one();
@@ -238,6 +263,12 @@ public:
         // keep track of receivers.  This allows us to wait for all receivers to 
         // go away before we free the memory
         receivers_++;
+
+        if (senders_ > 0) {
+            lock.unlock();
+            cv.notify_one();
+            lock.lock();
+        }
 
         if (wait) cv.wait(lock, [this]{ return this->queue.size() > 0 || is_closed_; });
 
@@ -272,12 +303,21 @@ public:
         return this->queue.size() == 0 && is_closed_;
     }
 
+    size_t capacity() const {
+        // capacity cannot be changed so no need to lock it
+        return capacity_;
+    }
+
     channel() 
-        : wait_id(0), is_closed_(false), receivers_(0) 
+        : wait_id(0), is_closed_(false), receivers_(0), senders_(0), capacity_(std::numeric_limits<decltype(capacity_)>::max()) 
 #ifndef NDEBUG
             , send_queue_(0), send_watchers_(0), receive_queue_(0), receive_watcher_(0), receive_while_closed_(0)
 #endif
     { }
+
+    channel(size_t capacity) : channel() {
+        capacity_ = capacity;
+    }
 
 #ifndef NDEBUG
     int send_watchers() {

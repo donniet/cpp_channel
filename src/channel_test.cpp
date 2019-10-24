@@ -19,6 +19,41 @@ TEST(ChannelTest, Close) {
     EXPECT_TRUE(c.is_closed());
 }
 
+TEST(ChannelTest, Send0) {
+    channel<int> c(0);
+    int val = 0;
+    bool ret = false;
+
+    EXPECT_FALSE(c.recv<false>(val));
+    EXPECT_FALSE(c.send<false>(5));
+
+    std::thread r([&c, &val]{ 
+        c.recv(val); 
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::thread s([&c, &ret]{
+        ret = c.send<false>(6);
+    });
+
+    r.join();
+    s.join();
+
+    EXPECT_TRUE(ret);
+    EXPECT_EQ(val, 6);
+}
+
+TEST(ChannelTest, SendN) {
+    channel<int> c(5);
+
+    for(int i = 0; i < 6; i++) {
+        if (i < 5) {
+            EXPECT_TRUE(c.send<false>(i));
+        } else {
+            EXPECT_FALSE(c.send<false>(i));
+        }
+    }
+}
+
 TEST(ChannelTest, SendRecv) {
     channel<int> c;
 
