@@ -30,6 +30,8 @@ TEST(ChannelTest, Send0) {
     std::thread r([&c, &val]{ 
         c.recv(val); 
     });
+    // sleep to help ensure that the receiver begins receiving
+    // TODO: think of a better way to do this than just sleeping this thread.
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     std::thread s([&c, &ret]{
         ret = c.send<false>(6);
@@ -50,6 +52,16 @@ TEST(ChannelTest, SendN) {
             EXPECT_TRUE(c.send<false>(i));
         } else {
             EXPECT_FALSE(c.send<false>(i));
+        }
+    }
+
+    int val;
+    for(int i = 0; i < 6; i++) {
+        if (i < 5) {
+            EXPECT_TRUE(c.recv<false>(val));
+            EXPECT_EQ(val, i);
+        } else {
+            EXPECT_FALSE(c.recv<false>(val));
         }
     }
 }
@@ -124,7 +136,7 @@ TEST(ChannelTest, SendRecvThread) {
 }
 
 TEST(ChannelTest, Select) {
-    bool ok = true;
+    bool closed = false;
     int val = 0;
     channel<int> c;
     
@@ -140,10 +152,53 @@ TEST(ChannelTest, Select) {
     c.close();
 
     select(
-        case_receive(std::tie(val, ok), c)
+        case_receive(std::tie(val, closed), c)
     );
 
-    EXPECT_TRUE(ok);
+    EXPECT_TRUE(closed);
+
+    channel<int> d;
+
+    select(
+        case_send(5, d)
+    );
+
+    d.recv(val);
+
+    EXPECT_EQ(val, 5);
+
+    channel<int> e(0);
+
+    select(
+        case_send(5, e, [&val]{
+            val = 0;
+        }),
+        case_default([&val]{
+            val = 0xDEADBEEF;
+        })
+    );
+
+
+    EXPECT_EQ(val, 0xDEADBEEF); 
+    val = 0;
+
+    std::thread t([&e, &val]{ e.recv(val); });
+
+    bool sent = false;
+
+    select(
+        case_send(5, e, [&sent]{
+            sent = true;
+        }),
+        case_default([&sent]{
+            sent = false;
+        })
+    );
+
+    t.join();
+
+    EXPECT_EQ(val, 5);
+    EXPECT_TRUE(sent);
 }
 
 TEST(ChannelTest, SelectAction) {
